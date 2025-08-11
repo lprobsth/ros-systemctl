@@ -10,6 +10,7 @@ Copyright 2023 Thales Alenia Space
 #include <string>
 #include <memory>
 #include <vector>
+#include <map>
 
 #include <rclcpp/rclcpp.hpp>
 #include <std_srvs/srv/trigger.hpp>
@@ -42,6 +43,7 @@ private:
   std::string restart_service_name_;
   std::string query_service_name_;
   std::vector<std::string> sys_services_list;
+  std::map<std::string, std::string> service_namespaces_;
 
   std::vector<rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr> start_srvs_;
   std::vector<rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr> stop_srvs_;

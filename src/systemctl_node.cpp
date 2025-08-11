@@ -13,13 +13,55 @@ namespace addons
 SystemctlController::SystemctlController(const rclcpp::NodeOptions & options)
 : Node("systemctl_node", options)
 {
-  const std::vector<std::string> services;
-  sys_services_list = declare_parameter<std::vector<std::string>>("sys_services", services);
+  RCLCPP_INFO(get_logger(), "SystemctlController constructor called");
+  RCLCPP_INFO(get_logger(), "Node name: %s", get_name());
+  RCLCPP_INFO(get_logger(), "Node namespace: %s", get_namespace());
+  
+  // Debug: List all parameters to see what's actually loaded
+  auto param_names = this->list_parameters({}, 0);
+  RCLCPP_INFO(get_logger(), "Total parameters loaded: %zu", param_names.names.size());
+  for (const auto& name : param_names.names) {
+    RCLCPP_INFO(get_logger(), "Parameter found: %s", name.c_str());
+  }
+  
+  // Changed from simple list to structured configuration
+  // Each service can now have its own namespace and topic name
   start_service_name_ = declare_parameter<std::string>("services_name.start", "start_service");
   stop_service_name_ = declare_parameter<std::string>("services_name.stop", "stop_service");
   restart_service_name_ =
     declare_parameter<std::string>("services_name.restart", "restart_service");
   query_service_name_ = declare_parameter<std::string>("services_name.query", "query_service");
+  
+  // Get service configurations - each service can have its own fully qualified path
+  auto service_configs = declare_parameter<std::vector<std::string>>("sys_services", std::vector<std::string>());
+  
+  RCLCPP_INFO(get_logger(), "Found %zu service configurations", service_configs.size());
+  
+  // Parse service configurations
+  for (const auto& config : service_configs) {
+    // Expected format: "systemd_service_name:fully_qualified_path" or just "systemd_service_name"
+    std::string systemd_service;
+    std::string service_path = "";
+    
+    size_t colon_pos = config.find(':');
+    if (colon_pos != std::string::npos) {
+      systemd_service = config.substr(0, colon_pos);
+      service_path = config.substr(colon_pos + 1);
+      // Ensure path ends with '/' for consistent service naming
+      if (!service_path.empty() && service_path.back() != '/') {
+        service_path += "/";
+      }
+    } else {
+      systemd_service = config;
+      service_path = systemd_service + "/"; // Default behavior
+    }
+    
+    sys_services_list.push_back(systemd_service);
+    service_namespaces_[systemd_service] = service_path;
+    
+    RCLCPP_INFO(get_logger(), "Configured service '%s' with path '%s'", 
+                systemd_service.c_str(), service_path.c_str());
+  }
 
   auto systemd_method_cb = [this](std::string systemd_unit, std::string systemd_method) {
       return [this, systemd_unit,
@@ -36,23 +78,34 @@ SystemctlController::SystemctlController(const rclcpp::NodeOptions & options)
              };
     };
 
-  for (std::string sys_ser : sys_services_list) {
+  for (const std::string& sys_ser : sys_services_list) {
+    std::string service_prefix = service_namespaces_[sys_ser];
+    
+    RCLCPP_INFO(get_logger(), "Creating services for '%s' with prefix '%s'", 
+                sys_ser.c_str(), service_prefix.c_str());
+    
     start_srvs_.push_back(
       create_service<std_srvs::srv::Trigger>(
-        sys_ser + "/" +
-        start_service_name_, systemd_method_cb(sys_ser, "StartUnit")));
+        service_prefix + start_service_name_, 
+        systemd_method_cb(sys_ser, "StartUnit")));
     stop_srvs_.push_back(
       create_service<std_srvs::srv::Trigger>(
-        sys_ser + "/" + stop_service_name_,
+        service_prefix + stop_service_name_,
         systemd_method_cb(sys_ser, "StopUnit")));
     restart_srvs_.push_back(
       create_service<std_srvs::srv::Trigger>(
-        sys_ser + "/" +
-        restart_service_name_, systemd_method_cb(sys_ser, "RestartUnit")));
+        service_prefix + restart_service_name_, 
+        systemd_method_cb(sys_ser, "RestartUnit")));
     query_srvs_.push_back(
       create_service<std_srvs::srv::Trigger>(
-        sys_ser + "/" +
-        query_service_name_, systemd_query_cb(sys_ser, "ActiveState")));
+        service_prefix + query_service_name_, 
+        systemd_query_cb(sys_ser, "ActiveState")));
+        
+    RCLCPP_INFO(get_logger(), "Created services: %s, %s, %s, %s", 
+                (service_prefix + start_service_name_).c_str(),
+                (service_prefix + stop_service_name_).c_str(),
+                (service_prefix + restart_service_name_).c_str(),
+                (service_prefix + query_service_name_).c_str());
   }
 }
 
@@ -148,3 +201,42 @@ void SystemctlController::query_status(
   response->message = out_str;
 }
 }  // namespace addons
+
+int main(int argc, char * argv[])
+{
+  rclcpp::init(argc, argv);
+  
+  rclcpp::NodeOptions options;
+  
+  // Check for namespace argument
+  for (int i = 1; i < argc; ++i) {
+    std::string arg(argv[i]);
+    if (arg == "--ros-args" && i + 2 < argc) {
+      std::string next_arg(argv[i + 1]);
+      if (next_arg == "-r") {
+        std::string remap_arg(argv[i + 2]);
+        if (remap_arg.find("__ns:=") == 0) {
+          // Extract namespace from __ns:=/namespace format
+          std::string ns = remap_arg.substr(6);
+          if (!ns.empty() && ns[0] != '/') {
+            ns = "/" + ns;
+          }
+          // The namespace will be handled by rclcpp automatically through remapping
+        }
+      }
+    }
+  }
+  
+  auto node = std::make_shared<addons::SystemctlController>(options);
+  
+  RCLCPP_INFO(node->get_logger(), "SystemCtl Controller Node started");
+  
+  try {
+    rclcpp::spin(node);
+  } catch (const std::exception & e) {
+    RCLCPP_ERROR(node->get_logger(), "Exception in main: %s", e.what());
+  }
+  
+  rclcpp::shutdown();
+  return 0;
+}
