@@ -7,5 +7,5 @@ systemctl_node:
       query: "query_service"
     sys_services:
     - myservice0
-    - myservice1
-    - myservice2
+    - "myservice1:my_relative_namespace/myservice1"
+    - myservice2:/my_absolute_namespace/myservice2"
